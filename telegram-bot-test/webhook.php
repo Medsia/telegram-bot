@@ -2,21 +2,33 @@
 
 // Загружаем конфигурацию
 $configFilePath = 'config.json';
-// Файл для хранения отправленных сообщений
+
 define('MESSAGE_LOG_FILE', 'sent_messages.json');
+define('ERROR_LOG_FILE', 'error.log');
+
+function logError($message) {
+    $date = date('Y-m-d H:i:s');
+    file_put_contents(ERROR_LOG_FILE, "[$date] $message\n", FILE_APPEND);
+}
 
 try {
     if (!file_exists($configFilePath)) {
-        throw new Exception("Файл конфигурации не найден: $configFilePath");
+        throw new Exception("ConfigError: File not found - $configFilePath");
     }
-    $config = json_decode(file_get_contents($configFilePath), true);
 
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        throw new Exception("Ошибка парсинга JSON: " . json_last_error_msg());
+    $configContent = file_get_contents($configFilePath);
+    if ($configContent === false) {
+        throw new Exception("ConfigError: Failed to read file");
     }
+
+    $config = json_decode($configContent, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception("ConfigError: Invalid JSON - " . json_last_error_msg());
+    }
+
 } catch (Exception $e) {
-    error_log($e->getMessage()); // Логируем ошибку в файл
-    die("Ошибка конфигурации: " . $e->getMessage()); // Завершаем выполнение с сообщением
+    logError("[CONFIG ERROR] " . $e->getMessage());
+    die("Error: Unable to load bot configuration " . $e->getMessage());
 }
 $botToken = $config['BotConfiguration']['BotToken'];
 $apiUrl = "https://api.telegram.org/bot$botToken/";
@@ -31,10 +43,23 @@ function sendRequest($method, $data = [])
             'header' => "Content-Type: application/json\r\n",
             'method' => 'POST',
             'content' => json_encode($data),
+            'ignore_errors' => true // получать тело даже при ошибке
         ]
     ];
     $context = stream_context_create($options);
-    return file_get_contents($url, false, $context);
+    try {
+        $response = file_get_contents($url, false, $context);
+
+        if ($response === false) {
+            throw new Exception("Error executing request to Telegram API: $method");
+        }
+
+        return $response;
+
+    } catch (Exception $e) {
+        logError("[API ERROR] " . $e->getMessage());
+        return json_encode(['ok' => false, 'error' => $e->getMessage()]);
+    }
 }
 function isUserSubscribed($userId, $channelUsername)
 {
@@ -56,9 +81,22 @@ function isUserSubscribed($userId, $channelUsername)
 // Функция для сохранения отправленных сообщений
 function saveBroadcastMessages($messages)
 {
-    $allMessages = file_exists(MESSAGE_LOG_FILE) ? json_decode(file_get_contents(MESSAGE_LOG_FILE), true) : [];
-    $allMessages[] = $messages; // Добавляем новую рассылку в общий список
-    file_put_contents(MESSAGE_LOG_FILE, json_encode($allMessages, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    try {
+        $allMessages = file_exists(MESSAGE_LOG_FILE)
+            ? json_decode(file_get_contents(MESSAGE_LOG_FILE), true)
+            : [];
+
+        if (!is_array($allMessages)) {
+            $allMessages = [];
+        }
+
+        $allMessages[] = $messages;
+
+        file_put_contents(MESSAGE_LOG_FILE, json_encode($allMessages, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+    } catch (Exception $e) {
+        logError(" [SAVE ERROR] " . $e->getMessage());
+    }
 }
 
 // Функция для удаления отправленных сообщений
@@ -79,10 +117,14 @@ function deleteLastBroadcast()
 
     // Удаляем каждое сообщение из последней рассылки
     foreach ($lastBroadcast as $msg) {
-        sendRequest('deleteMessage', [
-            'chat_id' => $msg['chat_id'],
-            'message_id' => $msg['message_id']
-        ]);
+        try {
+            sendRequest('deleteMessage', [
+                'chat_id' => $msg['chat_id'],
+                'message_id' => $msg['message_id']
+            ]);
+        } catch (Exception $e) {
+            logError("[DELETE ERROR] " . $e->getMessage());
+        }
     }
 
     // Записываем обновленный список рассылок без последней
@@ -90,9 +132,18 @@ function deleteLastBroadcast()
 
     return true;
 }
-// Читаем входящие данные
+// Чтение входящих данных
 $content = file_get_contents('php://input');
+if ($content === false) {
+    logError("Failed to read incoming data.");
+    exit;
+}
+
 $update = json_decode($content, true);
+if (json_last_error() !== JSON_ERROR_NONE) {
+    logError("JSON decoding error: " . json_last_error_msg());
+    exit;
+}
 
 // Обрабатываем сообщение
 if (isset($update['message'])) {
@@ -106,16 +157,21 @@ if (isset($update['message'])) {
     $username = $update['message']['from']['username'] ?? '';
 
     // Файл для сохранения данных пользователей
-    $chatFile = 'chat_data.json';
-
-    // Проверяем и создаем файл, если он отсутствует
-    if (!file_exists($chatFile)) {
-        file_put_contents($chatFile, json_encode([]));
+    $chatDataJson  = 'chat_data.json';
+    if (file_get_contents($chatDataJson) === false) {
+    logError("Failed to read chat data file: $chatDataJson");
+    exit;
+    }
+    if (!file_exists($chatDataJson )) {
+        file_put_contents($chatDataJson , json_encode([]));
     }
 
     // Загружаем данные пользователей из файла
-    $activeChats = json_decode(file_get_contents($chatFile), true);
-
+    $activeChats = json_decode(file_get_contents($chatDataJson ), true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+    logError("JSON decoding error in $chatFile: " . json_last_error_msg());
+    exit;
+    }
     // Проверяем, существует ли уже запись для этого чата
     $found = false;
     foreach ($activeChats as &$chat) {
@@ -140,9 +196,11 @@ if (isset($update['message'])) {
     }
 
     // Сохраняем обновленные данные в файл
-    file_put_contents($chatFile, json_encode($activeChats, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    if (file_put_contents($chatDataJson , json_encode($activeChats, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) === false) {
+        logError("Failed to write data to file $chatFile");
+    }
     // // Проверка подписки на канал
-    // $channelUsername = '@gomselmashofficial';
+    $channelUsername = '@gomselmashofficial';
 
     // if (!isUserSubscribed($userId, $channelUsername)) {
     //     sendRequest('sendMessage', [
@@ -213,6 +271,19 @@ if (isset($update['message'])) {
         // Рассылка администраторам
         sendRequest('sendMessage', ['chat_id' => 914603490, 'text' => $broadcastMessage, 'parse_mode' => 'HTML']);
         sendRequest('sendMessage', ['chat_id' => 576120889, 'text' => $broadcastMessage, 'parse_mode' => 'HTML']);
+//         for ($i = 0; $i < 150; $i++) {
+//     sendRequest('sendMessage', [
+//         'chat_id' => 914603490,
+//         'text' => $broadcastMessage .' '.$i,
+//         'parse_mode' => 'HTML'
+//     ]);
+//     sendRequest('sendMessage', [
+//         'chat_id' => 576120889,
+//         'text' => $broadcastMessage .' '.$i,
+//         'parse_mode' => 'HTML'
+//     ]);
+//     usleep(100_000);
+// }
         // Уведомляем администратора
         sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Сообщение отправлено.']);
     } elseif (str_starts_with($text, '/broadcast_all') && $chatId == $config['adminId']) {
@@ -265,10 +336,14 @@ if (isset($update['message'])) {
                 'keyboard' => [
                     [
                         ['text' => 'Фотоматериалы 📸'],
-                        ['text' => 'Каталоги 🗂️']
+                        ['text' => 'Видеоматериалы 🎥'],
                     ],
                     [
-                        ['text' => 'Покупка 💸'],
+                        ['text' => 'Каталоги 🗂️'],
+                        ['text' => 'Покупка 💸']
+                        
+                    ],
+                    [
                         ['text' => 'Сервис 🛠️']
                     ]
                 ],
@@ -307,6 +382,15 @@ if (isset($update['message'])) {
             ]);
             break;
 
+        case "видеоматериалы 🎥":
+            $link = $config['videoLinks']['main'];
+            sendRequest('sendMessage', [
+                'chat_id' => $chatId,
+                'parse_mode' => 'HTML',
+                'text' => "Ссылка для скачивания: $link"
+            ]);
+            break;
+    
         case "каталоги 🗂️":
             $keyboardCatalogsModels = [
                 'keyboard' => [
@@ -667,13 +751,13 @@ if (isset($update['message'])) {
             ]);
             break;
 
-        case "фотографии без фона 📸":
+         case "фотографии без фона 📸":
             $link = $config['photoLinks']['background_none'];
             sendRequest('sendMessage', [
-                'chat_id' => $chatId,
+                 'chat_id' => $chatId,
                 'parse_mode' => 'HTML',
-                'text' => "Ссылка для скачивания: $link"
-            ]);
+                 'text' => "Ссылка для скачивания: $link"
+             ]);
             break;
 
         case "gs2124 📸":
