@@ -202,14 +202,14 @@ if (isset($update['message'])) {
     // // Проверка подписки на канал
     $channelUsername = '@gomselmashofficial';
 
-    if (!isUserSubscribed($userId, $channelUsername)) {
-        sendRequest('sendMessage', [
-            'chat_id' => $chatId,
-            'parse_mode' => 'HTML',
-            'text' => "<b>Просим вас подписаться на наш канал.</b>\nПожалуйста, подпишитесь на <a href='https://t.me/gomselmashofficial'>наш канал</a>, чтобы продолжить использование бота."
-        ]);
-        exit; // Завершаем выполнение, если пользователь не подписан
-    }
+    // if (!isUserSubscribed($userId, $channelUsername)) {
+    //     sendRequest('sendMessage', [
+    //         'chat_id' => $chatId,
+    //         'parse_mode' => 'HTML',
+    //         'text' => "<b>Просим вас подписаться на наш канал.</b>\nПожалуйста, подпишитесь на <a href='https://t.me/gomselmashofficial'>наш канал</a>, чтобы продолжить использование бота."
+    //     ]);
+    //     exit; // Завершаем выполнение, если пользователь не подписан
+    // }
     // Обработка команд от администратора
     if (str_starts_with($text, '/broadcast_photo') && $chatId == $config['adminId']) {
         // Извлекаем параметры команды
