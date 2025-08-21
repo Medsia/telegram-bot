@@ -78,67 +78,13 @@ function isUserSubscribed($userId, $channelUsername)
 
     return false;
 }
-// Функция для сохранения отправленных сообщений
-function saveBroadcastMessages($messages)
-{
-    try {
-        $allMessages = file_exists(MESSAGE_LOG_FILE)
-            ? json_decode(file_get_contents(MESSAGE_LOG_FILE), true)
-            : [];
 
-        if (!is_array($allMessages)) {
-            $allMessages = [];
-        }
-
-        $allMessages[] = $messages;
-
-        file_put_contents(MESSAGE_LOG_FILE, json_encode($allMessages, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-
-    } catch (Exception $e) {
-        logError(" [SAVE ERROR] " . $e->getMessage());
-    }
-}
-
-// Функция для удаления отправленных сообщений
-function deleteLastBroadcast()
-{
-    if (!file_exists(MESSAGE_LOG_FILE)) {
-        return false;
-    }
-
-    $allMessages = json_decode(file_get_contents(MESSAGE_LOG_FILE), true);
-
-    if (empty($allMessages)) {
-        return false;
-    }
-
-    // Берем последнюю рассылку
-    $lastBroadcast = array_pop($allMessages);
-
-    // Удаляем каждое сообщение из последней рассылки
-    foreach ($lastBroadcast as $msg) {
-        try {
-            sendRequest('deleteMessage', [
-                'chat_id' => $msg['chat_id'],
-                'message_id' => $msg['message_id']
-            ]);
-        } catch (Exception $e) {
-            logError("[DELETE ERROR] " . $e->getMessage());
-        }
-    }
-
-    // Записываем обновленный список рассылок без последней
-    file_put_contents(MESSAGE_LOG_FILE, json_encode($allMessages, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-
-    return true;
-}
 // Чтение входящих данных
 $content = file_get_contents('php://input');
 if ($content === false) {
     logError("Failed to read incoming data.");
     exit;
 }
-
 $update = json_decode($content, true);
 if (json_last_error() !== JSON_ERROR_NONE) {
     logError("JSON decoding error: " . json_last_error_msg());
@@ -200,7 +146,7 @@ if (isset($update['message'])) {
         logError("Failed to write data to file $chatFile");
     }
     // // Проверка подписки на канал
-    $channelUsername = '@gomselmashofficial';
+    // $channelUsername = '@gomselmashofficial';
 
     // if (!isUserSubscribed($userId, $channelUsername)) {
     //     sendRequest('sendMessage', [
@@ -212,7 +158,6 @@ if (isset($update['message'])) {
     // }
     // Обработка команд от администратора
     if (str_starts_with($text, '/broadcast_photo') && $chatId == $config['adminId']) {
-        // Извлекаем параметры команды
         $params = explode(' ', $text, 3);
 
         if (count($params) < 3) {
@@ -224,68 +169,46 @@ if (isset($update['message'])) {
         $photoUrl = $params[1]; // URL изображения
         $caption = $params[2];  // Текст сообщения
 
-        // Проверяем валидность URL
-        if (!filter_var($photoUrl, FILTER_VALIDATE_URL)) {
-            sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Ошибка: указан некорректный URL изображения.']);
-            return;
-        }
+        $task = [
+            'type' => 'photo',
+            'photo' => $photoUrl,
+            'caption' => $caption,
+            'created_at' => time(),
+        ];
+        file_put_contents("broadcast_task.json", json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-        // Список сообщений этой рассылки
-        $sentMessages = [];
+        exec("php broadcast_service.php > /dev/null &");
 
-        // Рассылка во все чаты
-        foreach ($activeChats as $chat) {
-            $response = sendRequest('sendPhoto', [
-                'chat_id' => $chat['id'],
-                'photo' => $photoUrl,
-                'caption' => $caption,
-                'parse_mode' => 'HTML'
-            ]);
-
-            $response = json_decode($response, true);
-
-            // Сохранение информации о сообщении
-            if (isset($response['ok']) && $response['ok']) {
-                $sentMessages[] = [
-                    'chat_id' => $chat['id'],
-                    'message_id' => $response['result']['message_id']
-                ];
-            }
-        }
-
-        // Сохраняем сообщения этой рассылки
-        if (!empty($sentMessages)) {
-            saveBroadcastMessages($sentMessages);
-        }
-        // Уведомляем администратора
-        sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Фото отправлено во все чаты.']);
+        sendRequest('sendMessage', [
+            'chat_id' => $chatId,
+            'text' => 'Рассылка с фото поставлена в очередь ✅'
+        ]);
     } elseif (str_starts_with($text, '/broadcast_test') && $chatId == $config['adminId']) {
-        // Извлекаем сообщение для рассылки
-        $broadcastMessage = trim(substr($text, strlen('/broadcast_test')));
+        $params = explode(' ', $text, 3);
 
-        if (empty($broadcastMessage)) {
-            sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Ошибка: сообщение для рассылки пустое.']);
+        if (count($params) < 3) {
+            sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Ошибка: необходимо указать URL изображения и текст сообщения.']);
             return;
         }
 
-        // Рассылка администраторам
-        sendRequest('sendMessage', ['chat_id' => 914603490, 'text' => $broadcastMessage, 'parse_mode' => 'HTML']);
-        sendRequest('sendMessage', ['chat_id' => 576120889, 'text' => $broadcastMessage, 'parse_mode' => 'HTML']);
-//         for ($i = 0; $i < 150; $i++) {
-//     sendRequest('sendMessage', [
-//         'chat_id' => 914603490,
-//         'text' => $broadcastMessage .' '.$i,
-//         'parse_mode' => 'HTML'
-//     ]);
-//     sendRequest('sendMessage', [
-//         'chat_id' => 576120889,
-//         'text' => $broadcastMessage .' '.$i,
-//         'parse_mode' => 'HTML'
-//     ]);
-//     usleep(100_000);
-// }
-        // Уведомляем администратора
-        sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Сообщение отправлено.']);
+        // Разбираем параметры
+        $photoUrl = $params[1]; // URL изображения
+        $caption = $params[2];  // Текст сообщения
+
+        $task = [
+            'type' => 'test',
+            'photo' => $photoUrl,
+            'caption' => $caption,
+            'created_at' => time(),
+        ];
+        file_put_contents("broadcast_task.json", json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        exec("php broadcast_service.php > /dev/null &");
+
+        sendRequest('sendMessage', [
+            'chat_id' => $chatId,
+            'text' => 'Тестовая рассылка поставлена в очередь ✅'
+        ]);
     } elseif (str_starts_with($text, '/broadcast_all') && $chatId == $config['adminId']) {
         // Извлекаем сообщение для рассылки
         $broadcastMessage = trim(substr($text, strlen('/broadcast_all')));
@@ -295,39 +218,32 @@ if (isset($update['message'])) {
             return;
         }
 
-        // Список сообщений этой рассылки
-        $sentMessages = [];
+        $task = [
+            'type' => 'text',
+            'content' => $broadcastMessage,
+            'created_at' => time(),
+        ];
+        file_put_contents("broadcast_task.json", json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
-        // Рассылка во все чаты
-        foreach ($activeChats as $chat) {
-            $response = sendRequest('sendMessage', [
-                'chat_id' => $chat['id'],
-                'text' => $broadcastMessage,
-                'parse_mode' => 'HTML'
-            ]);
-            $response = json_decode($response, true);
-            // Сохранение информации о сообщении
-            if (isset($response['ok']) && $response['ok']) {
-                $sentMessages[] = [
-                    'chat_id' => $chat['id'],
-                    'message_id' => $response['result']['message_id']
-                ];
-            }
-        }
+        exec("php broadcast_service.php > /dev/null &");
 
-        // Сохраняем сообщения этой рассылки
-        if (!empty($sentMessages)) {
-            saveBroadcastMessages($sentMessages);
-        }
-
-        // Уведомляем администратора
-        sendRequest('sendMessage', ['chat_id' => $chatId, 'parse_mode' => 'HTML', 'text' => 'Сообщение отправлено во все чаты.']);
+        sendRequest('sendMessage', [
+            'chat_id' => $chatId,
+            'text' => 'Рассылка текста поставлена в очередь ✅'
+        ]);
     } elseif ($text === '/delete_last_broadcast' && $chatId == $config['adminId']) {
-        if (deleteLastBroadcast()) {
-            sendRequest('sendMessage', ['chat_id' => $chatId, 'text' => 'Последняя рассылка удалена.']);
-        } else {
-            sendRequest('sendMessage', ['chat_id' => $chatId, 'text' => 'Ошибка: нет сообщений для удаления.']);
-        }
+        $task = [
+            'type' => 'deleteLastBroadcast',
+            'created_at' => time(),
+        ];
+        file_put_contents("broadcast_task.json", json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        exec("php broadcast_service.php > /dev/null &");
+
+        sendRequest('sendMessage', [
+            'chat_id' => $chatId,
+            'text' => 'Удаление в очереди ✅'
+        ]);
     }
     switch (mb_strtolower($text)) {
         case "вернуться":
