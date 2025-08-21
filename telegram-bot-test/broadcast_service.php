@@ -146,15 +146,12 @@ $sentMessages = [];
 // Начало рассылки
 foreach ($activeChats as $chat) {
     if ($task['type'] === 'photo') {
-
         $response = sendRequest('sendPhoto', [
             'chat_id' => $chat['id'],
             'photo' => $task['photo'],
-            'caption' => $i,
+            'caption' => $task['caption'],
             'parse_mode' => 'HTML'
         ]);
-         usleep(100000);
-
     } elseif ($task['type'] === 'text') {
         $response = sendRequest('sendMessage', [
             'chat_id' => $chat['id'],

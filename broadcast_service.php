@@ -123,14 +123,26 @@ if (!file_exists(BROADCAST_TASK_FILE)) {
 
 $task = json_decode(file_get_contents(BROADCAST_TASK_FILE), true);
 
-// Проверка блокировки (защита от повторного запуска)
-if (file_exists(BROADCAST_LOCK_FILE)) {
+// ---- Система блокировок ----
+$lockHandle = fopen(BROADCAST_LOCK_FILE, 'c');
+if (!$lockHandle || !flock($lockHandle, LOCK_EX | LOCK_NB)) {
     logError("Рассылка уже выполняется");
     exit("Рассылка уже выполняется\n");
 }
+ftruncate($lockHandle, 0);
+fwrite($lockHandle, getmypid());
+fflush($lockHandle);
 
-// Создаём файл-блокировку
-file_put_contents(BROADCAST_LOCK_FILE, getmypid());
+// Автоматическая очистка при завершении
+register_shutdown_function(function () use ($lockHandle) {
+    if ($lockHandle) {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    }
+    if (file_exists(BROADCAST_LOCK_FILE)) {
+        unlink(BROADCAST_LOCK_FILE);
+    }
+});
 
 // Загружаем список чатов
 $chatDataJson = 'chat_data.json';
@@ -146,15 +158,12 @@ $sentMessages = [];
 // Начало рассылки
 foreach ($activeChats as $chat) {
     if ($task['type'] === 'photo') {
-
         $response = sendRequest('sendPhoto', [
             'chat_id' => $chat['id'],
             'photo' => $task['photo'],
-            'caption' => $i,
+            'caption' => $task['caption'],
             'parse_mode' => 'HTML'
         ]);
-         usleep(100000);
-
     } elseif ($task['type'] === 'text') {
         $response = sendRequest('sendMessage', [
             'chat_id' => $chat['id'],
@@ -193,8 +202,9 @@ foreach ($activeChats as $chat) {
 if (!empty($sentMessages)) {
     saveBroadcastMessages($sentMessages);
 }
-// Удаляем задачу и блокировку
-unlink(BROADCAST_TASK_FILE);
-unlink(BROADCAST_LOCK_FILE);
+// ---- Очистка задания ----
+if (file_exists(BROADCAST_TASK_FILE)) {
+    unlink(BROADCAST_TASK_FILE);
+}
 
 sendRequest('sendMessage', ['chat_id' => $config['adminId'], 'parse_mode' => 'HTML', 'text' => 'Операция завершена.']);
